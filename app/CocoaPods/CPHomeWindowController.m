@@ -3,7 +3,8 @@
 #import "CPCLIToolInstallationController.h"
 #import "CPHomeWindowDocumentEntry.h"
 
-NSString * const kCPCLIToolSuggestedDestination = @"/usr/local/bin/pod";
+//NSString * const kCPCLIToolSuggestedDestination = @"/usr/local/bin/pod";
+NSString * const kCPCLIToolSuggestedDestination = @"/pod";      // TODO: just for testing; delete this when merging back to master
 
 @interface CPHomeWindowController ()
 

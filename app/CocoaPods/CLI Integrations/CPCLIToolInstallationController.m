@@ -468,10 +468,61 @@ CPBookmarkDataForURL(NSURL *URL) {
 
 - (BOOL)removeBinstubFromPrivilegedDestinationWithURL:(NSURL *)url
 {
+  const char *destination_path = [[url URLByDeletingLastPathComponent].path UTF8String];
   
-  // TODO: how to do this?!?
+  // Configure requested authorization.
+  char name[1024];
+  sprintf(name, "sys.openfile.readwritecreate.%s", destination_path);
+  AuthorizationFlags flags = kAuthorizationFlagInteractionAllowed |
+                             kAuthorizationFlagExtendRights |
+                             kAuthorizationFlagPreAuthorize;
   
-  return NO;
+  // Request the user for authorization.
+  NSError *error = nil;
+  SFAuthorization *authorization = [SFAuthorization authorization];
+  if (![authorization obtainWithRight:name flags:flags error:&error]) {
+    NSLog(@"Did not authorize.");
+    self.errorMessage = @"Did not get authorization to remove pod command";
+    return NO;
+  }
+  
+  // Serialize the AuthorizationRef so it can be passed to the `authopen` tool.
+  AuthorizationRef authorizationRef = [authorization authorizationRef];
+  AuthorizationExternalForm serializedRef;
+  OSStatus serialized = AuthorizationMakeExternalForm(authorizationRef, &serializedRef);
+  if (serialized != errAuthorizationSuccess) {
+    NSLog(@"Failed to serialize AuthorizationRef (%d)", serialized);
+    self.errorMessage = @"Could not use given authorization to remove pod command";
+    return NO;
+  }
+  
+  // Create a pipe through the `authopen` tool that allows removing the file
+  char command[1024];
+  sprintf(command, "/usr/libexec/authopen -extauth -c -m 0777 -w %s", destination_path);
+  errno = 0;
+  BOOL succeeded = NO;
+  FILE *destination_pipe = popen(command, "w");
+  if (destination_pipe == NULL) {
+    NSLog(@"Failed to open pipe to `authopen` (%d - %s)", errno, strerror(errno));
+  } else {
+    // First send the pre-authorized and serialized AuthorizationRef so that the
+    // `authopen` tool does not need to request authorization from the user,
+    // which would lead to the user seeing an authorization dialog from
+    // `authopen` instead of this app.
+    fwrite(&serializedRef, sizeof(serializedRef), 1, destination_pipe);
+    fflush(destination_pipe);
+    // Now delete from file system
+    const char *file_destination_path = [url.path UTF8String];
+    int ret = remove(file_destination_path);
+    if (ret != 0) {
+      NSLog(@"Failed to remove `%@` (%d - %s)", url.path, errno, strerror(errno));
+      self.errorMessage = @"Failed to remove pod command";
+    } else {
+      succeeded = YES;
+    }
+    pclose(destination_pipe);
+  }
+  return succeeded;
 }
 
 @end
