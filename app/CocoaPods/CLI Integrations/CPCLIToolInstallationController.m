@@ -466,14 +466,187 @@ CPBookmarkDataForURL(NSURL *URL) {
   return success;
 }
 
-- (BOOL)removeBinstubFromPrivilegedDestinationWithURL:(NSURL *)url
+- (BOOL)removeBinstubFromPrivilegedDestinationWithURL2:(NSURL *)url {
+  AuthorizationRef myAuthorizationRef;
+  OSStatus myStatus;
+  
+  // Creating an authorization reference without rights
+  myStatus = AuthorizationCreate (NULL, kAuthorizationEmptyEnvironment,
+                                  kAuthorizationFlagDefaults, &myAuthorizationRef);
+  // Creating an authorization reference with rights
+//  myStatus = AuthorizationCreate (&myRights, kAuthorizationEmptyEnvironment,
+//                                  myFlags, &myAuthorizationRef);
+  
+  if (myStatus != errAuthorizationSuccess) {
+    NSLog(@"ERROR > Couldn't create authorization reference (%d)", myStatus);
+    return NO;
+  }
+  
+  // requesting authorization rights
+  AuthorizationItem myItems[1];
+  myItems[0].name = "com.github.cocoapods.removeBinstub";
+  myItems[0].valueLength = 0;
+  myItems[0].value = NULL;
+  myItems[0].flags = 0;
+  
+  // Creating a set of authorization rights
+  AuthorizationRights myRights;
+  myRights.count = sizeof (myItems) / sizeof (myItems[0]);
+  myRights.items = myItems;
+  
+  // Specifying authorization options for authorization
+  AuthorizationFlags myFlags = kAuthorizationFlagDefaults | kAuthorizationFlagInteractionAllowed | kAuthorizationFlagExtendRights | kAuthorizationFlagPreAuthorize;
+  
+  // Authorizing rights
+  myStatus = AuthorizationCopyRights (myAuthorizationRef, &myRights,
+                                      kAuthorizationEmptyEnvironment, myFlags, NULL);
+  
+  if (myStatus != errAuthorizationSuccess) {
+    NSLog(@"ERROR > Couldn't obtain authorized rights (%d)", myStatus);
+    return NO;
+  }
+  
+  // TODO: delete our binstub
+  
+  // Releasing an authorization reference
+  myStatus = AuthorizationFree (myAuthorizationRef,
+                                kAuthorizationFlagDestroyRights);
+  
+  return YES;
+}
+
+// Source: http://stackoverflow.com/a/15248621
+- (BOOL)runProcessAsAdministrator:(NSString *)scriptPath
+                    withArguments:(NSArray *)arguments
+                           output:(NSString **)output
+                 errorDescription:(NSString **)errorDescription {
+  
+  NSString *allArgs = [arguments componentsJoinedByString:@" "];
+  NSString *fullScript = [NSString stringWithFormat:@"'%@' %@", scriptPath, allArgs];
+  
+  NSDictionary *errorInfo = [NSDictionary new];
+  NSString *script = [NSString stringWithFormat:@"do shell script \"%@\" with administrator privileges", fullScript];
+  
+  NSAppleScript *appleScript = [[NSAppleScript new] initWithSource:script];
+  NSAppleEventDescriptor *eventResult = [appleScript executeAndReturnError:&errorInfo];
+  
+  if (eventResult) {
+    // Set output to the AppleScript's output
+    *output = [eventResult stringValue];
+    
+    return YES;
+  }
+  
+  // Check errorInfo & describe common errors
+  *errorDescription = nil;
+  if ([errorInfo valueForKey:NSAppleScriptErrorNumber]) {
+    NSNumber *errorNumber = (NSNumber *)[errorInfo valueForKey:NSAppleScriptErrorNumber];
+    if ([errorNumber intValue] == -128) {
+      *errorDescription = @"The administrator password is required to do this.";
+    }
+  }
+  
+  // Set error message from provided message
+  if (*errorDescription == nil) {
+    if ([errorInfo valueForKey:NSAppleScriptErrorMessage]) {
+      *errorDescription = (NSString *)[errorInfo valueForKey:NSAppleScriptErrorMessage];
+    }
+  }
+  
+  return NO;
+}
+
++ (BOOL)removeFileWithElevatedPrivilegesFromLocation:(NSString *)location
+{
+  // Create authorization reference
+  OSStatus status;
+  AuthorizationRef authorizationRef;
+  
+  // AuthorizationCreate and pass NULL as the initial
+  // AuthorizationRights set so that the AuthorizationRef gets created
+  // successfully, and then later call AuthorizationCopyRights to
+  // determine or extend the allowable rights.
+  // http://developer.apple.com/qa/qa2001/qa1172.html
+  status = AuthorizationCreate(NULL, kAuthorizationEmptyEnvironment, kAuthorizationFlagDefaults, &authorizationRef);
+  if (status != errAuthorizationSuccess)
+  {
+    NSLog(@"Error Creating Initial Authorization: %d", status);
+    return NO;
+  }
+  
+  // kAuthorizationRightExecute == "system.privilege.admin"
+  AuthorizationItem right = {kAuthorizationRightExecute, 0, NULL, 0};
+  AuthorizationRights rights = {1, &right};
+  AuthorizationFlags flags = kAuthorizationFlagDefaults | kAuthorizationFlagInteractionAllowed |
+  kAuthorizationFlagPreAuthorize | kAuthorizationFlagExtendRights;
+  
+  // Call AuthorizationCopyRights to determine or extend the allowable rights.
+  status = AuthorizationCopyRights(authorizationRef, &rights, NULL, flags, NULL);
+  if (status != errAuthorizationSuccess)
+  {
+    NSLog(@"Copy Rights Unsuccessful: %d", status);
+    return NO;
+  }
+  
+  // use rm tool with -rf
+  char *tool = "/bin/rm";
+  char *args[] = {"-rf", (char *)[location UTF8String], NULL};
+  FILE *pipe = NULL;
+  
+  status = AuthorizationExecuteWithPrivileges(authorizationRef, tool, kAuthorizationFlagDefaults, args, &pipe);
+  if (status != errAuthorizationSuccess)
+  {
+    NSLog(@"Error: %d", status);
+    return NO;
+  }
+  
+  // The only way to guarantee that a credential acquired when you
+  // request a right is not shared with other authorization instances is
+  // to destroy the credential.  To do so, call the AuthorizationFree
+  // function with the flag kAuthorizationFlagDestroyRights.
+  // http://developer.apple.com/documentation/Security/Conceptual/authorization_concepts/02authconcepts/chapter_2_section_7.html
+  status = AuthorizationFree(authorizationRef, kAuthorizationFlagDestroyRights);
+  return YES;
+}
+
+// Possible Solutions:
+// 1. `AuthorizationExecuteWithPrivileges` but its deprecated since OS X 10.7: [1] and [2]
+// 2. `ServiceManagement.framework`'s `SMJobBless()`: [3] and [4]
+// 3. AppleScript: [5] and [6]
+//
+// References:
+// [1] http://www.michaelvobrien.com/blog/2009/07/authorizationexecutewithprivileges-a-simple-example/
+// [2] https://developer.apple.com/library/mac/documentation/Security/Conceptual/authorization_concepts/03authtasks/authtasks.html
+// [3] http://stackoverflow.com/a/6842129
+// [4] https://developer.apple.com/library/mac/samplecode/EvenBetterAuthorizationSample/Listings/Read_Me_About_EvenBetterAuthorizationSample_txt.html#//apple_ref/doc/uid/DTS40013768-Read_Me_About_EvenBetterAuthorizationSample_txt-DontLinkElementID_17
+// [5] http://stackoverflow.com/a/8865284
+// [6] http://stackoverflow.com/a/15248621
+- (BOOL)removeBinstubFromPrivilegedDestinationWithURL:(NSURL *)url {
+//  return [CPCLIToolInstallationController removeFileWithElevatedPrivilegesFromLocation:url.path];
+  
+  NSString * output = nil;
+  NSString * processErrorDescription = nil;
+  BOOL success = [self runProcessAsAdministrator:@"/bin/rm"
+                                   withArguments:@[@"-f", [NSString stringWithFormat:@"'%@'", url.path]]  // quotes for paths with spaces in it
+                                          output:&output
+                                errorDescription:&processErrorDescription];
+  
+  // Process failed to run
+  if (!success) {
+    NSLog(@"Failed to remove Binstub from privileged destination: %@", processErrorDescription);
+  }
+  return success;
+}
+
+- (BOOL)_removeBinstubFromPrivilegedDestinationWithURL:(NSURL *)url
 {
   const char *destination_path = [[url URLByDeletingLastPathComponent].path UTF8String];
   
   // Configure requested authorization.
   char name[1024];
   sprintf(name, "sys.openfile.readwritecreate.%s", destination_path);
-  AuthorizationFlags flags = kAuthorizationFlagInteractionAllowed |
+  AuthorizationFlags flags = kAuthorizationFlagDefaults |
+                             kAuthorizationFlagInteractionAllowed |
                              kAuthorizationFlagExtendRights |
                              kAuthorizationFlagPreAuthorize;
   
@@ -512,6 +685,7 @@ CPBookmarkDataForURL(NSURL *URL) {
     fwrite(&serializedRef, sizeof(serializedRef), 1, destination_pipe);
     fflush(destination_pipe);
     // Now delete from file system
+    
     const char *file_destination_path = [url.path UTF8String];
     int ret = remove(file_destination_path);
     if (ret != 0) {
